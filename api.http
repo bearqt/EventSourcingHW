@@ -1,0 +1,27 @@
+@base_address = http://localhost:5131
+GET {{base_address}}/products
+###
+POST {{base_address}}/orders
+Content-Type: application/json
+
+{
+  "productId": "f1122ce7-4f70-46ad-8345-01bfb60beb21",
+  "quantity": 50
+}
+###
+GET {{base_address}}/products/f1122ce7-4f70-46ad-8345-01bfb60beb21/events
+###
+POST {{base_address}}/orders/cancel
+Content-Type: application/json
+{
+  "productId": "f1122ce7-4f70-46ad-8345-01bfb60beb21",
+  "quantity": 50
+}
+
+###
+POST {{base_address}}/products/restock
+Content-Type: application/json
+{
+  "productId": "f1122ce7-4f70-46ad-8345-01bfb60beb21",
+  "quantity": 30
+}
