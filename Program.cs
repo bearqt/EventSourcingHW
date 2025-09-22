@@ -1,7 +1,8 @@
-using System.Text;
-using System.Text.Json;
 using EventStore.Client;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Distributed;
+using System.Text;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddEndpointsApiExplorer();
@@ -17,12 +18,18 @@ builder.Services.AddDbContext<WarehouseDbContext>(options =>
         b => b.MigrationsAssembly("Warehouse"));
 });
 
+// Redis для хранения снапшотов
+//builder.Services.AddStackExchangeRedisCache(options =>
+//{
+//    options.Configuration = "localhost:12345";
+//});
+
 var app = builder.Build();
 
-app.MapPost("/orders", async (PlaceOrderCommand command, EventStoreClient client, WarehouseDbContext db) =>
+app.MapPost("/orders", async (PlaceOrderCommand command, EventStoreClient client, WarehouseDbContext db, IDistributedCache cache) =>
 {
     // Получаем текущее состояние товара через проекцию
-    var product = await Projections.GetProductProjection(command.ProductId, client, db);
+    var product = await Projections.GetProductProjection(command.ProductId, client, db, cache);
 
     // Проверяем бизнес-логику (достаточно ли товара)
     if (product.QuantityInStock >= command.Quantity)
@@ -90,7 +97,7 @@ app.MapPost("/products/restock", async (RestockProductCommand command, EventStor
     return Results.Ok("Product restocked successfully.");
 });
 
-app.MapGet("/products", async (EventStoreClient client, WarehouseDbContext db) => 
+app.MapGet("/products", async (EventStoreClient client, WarehouseDbContext db, IDistributedCache cache) => 
 {
     var productsIds = db.Products
             .Select(x => x.Id)
@@ -98,7 +105,7 @@ app.MapGet("/products", async (EventStoreClient client, WarehouseDbContext db) =
     var projections = new List<Product>();
     foreach ( var productId in productsIds )
     {
-        var projection = await Projections.GetProductProjection(productId, client, db);
+        var projection = await Projections.GetProductProjection(productId, client, db, cache);
         if (projection is not null)
             projections.Add(projection);
     }
@@ -171,6 +178,12 @@ public class Product
     }
 }
 
+public class ProductSnapshot(Guid id, int quantityInStock, long version, DateTime createdAt) : Product(id, quantityInStock)
+{
+    public long Version { get; set; } = version;
+    public DateTime CreatedAt { get; set; } = createdAt;
+}
+
 public class WarehouseDbContext : DbContext
 {
     public DbSet<Product> Products { get; set; }
@@ -192,55 +205,124 @@ public class WarehouseDbContext : DbContext
 
 public class Projections
 {
-    public static async Task<Product?> GetProductProjection(Guid productId, EventStoreClient client, WarehouseDbContext db)
+    private const int SNAPSHOT_INTERVAL = 50;
+    private static readonly TimeSpan SNAPSHOT_TTL = TimeSpan.FromHours(24);
+
+    public static async Task<Product?> GetProductProjection(
+        Guid productId,
+        EventStoreClient client,
+        WarehouseDbContext db,
+        IDistributedCache cache)
     {
-        // Получаем "снимок" или начальное состояние из PostgreSQL
+        var cacheKey = $"product-snapshot-{productId}";
+        var cachedSnapshot = await cache.GetStringAsync(cacheKey);
+
+        if (cachedSnapshot != null) // Снапшот + Recent Events
+        {
+            var snapshotData = JsonSerializer.Deserialize<ProductSnapshot>(cachedSnapshot);
+            var product = new ProductSnapshot(productId, snapshotData.QuantityInStock, snapshotData.Version, snapshotData.CreatedAt);
+
+            return await ApplyRecentEvents(productId, product, client, cache);
+        }
+
+        // All events + save snapshot
+        return await RebuildProjection(productId, client, db, cache);
+    }
+
+    private static async Task<Product?> RebuildProjection(
+        Guid productId,
+        EventStoreClient client,
+        WarehouseDbContext db,
+        IDistributedCache cache)
+    {
         var product = await db.Products.FindAsync(productId);
-        if (product == null) return null;
 
-        try
+        long eventsCount = 0;
+
+        var events = client.ReadStreamAsync(Direction.Forwards, $"product-{productId}", StreamPosition.Start);
+
+        await foreach (var resolvedEvent in events)
         {
-            // Читаем поток событий, связанных с этим продуктом
-            var events = client.ReadStreamAsync(Direction.Forwards, $"product-{productId}", StreamPosition.Start);
-
-            // В цикле применяем каждое событие к состоянию объекта
-            await foreach (var resolvedEvent in events)
-            {
-                var eventData = resolvedEvent.Event.Data.ToArray();
-
-                // В реальном проекте здесь будет логика выбора типа для десериализации
-                // на основе resolvedEvent.Event.EventType. Для простоты пока используем один тип.
-                switch (resolvedEvent.Event.EventType)
-                {
-                    case nameof(OrderPlacedEvent):
-                        var orderPlacedEvent = JsonSerializer.Deserialize<OrderPlacedEvent>(eventData);
-                        if (orderPlacedEvent is not null)
-                            product.Apply(orderPlacedEvent);
-                        break;
-
-                    case nameof(OrderCancelledEvent):
-                        var orderCancelledEvent = JsonSerializer.Deserialize<OrderCancelledEvent>(eventData);
-                        if (orderCancelledEvent is not null)
-                            product.Apply(orderCancelledEvent);
-                        break;
-
-                    case nameof(ProductRestockedEvent):
-                        var productRestockedEvent = JsonSerializer.Deserialize<ProductRestockedEvent>(eventData);
-                        if (productRestockedEvent is not null)
-                            product.Apply(productRestockedEvent);
-                        break;
-                }
-            }
-
-            // TODO запись в снапшот
+            eventsCount++;
+            ApplyEvent(product, resolvedEvent);
         }
-        catch (StreamNotFoundException)
+
+        var productSnapshot = new ProductSnapshot(product.Id, product.QuantityInStock, 1, DateTime.Now);
+
+        await SaveSnapshotToCache(productId, productSnapshot, cache);
+
+        return product;
+        
+    }
+
+    private static async Task<Product> ApplyRecentEvents(
+        Guid productId, ProductSnapshot product, EventStoreClient client, IDistributedCache cache)
+    {
+        var events = client.ReadStreamAsync(
+            Direction.Forwards,
+            $"product-{productId}",
+            StreamPosition.FromInt64(product.Version + 1)
+        );
+
+        await foreach (var resolvedEvent in events)
         {
-            // Если событий еще не было, просто возвращаем начальное состояние
-            return product;
+            ApplyEvent(product, resolvedEvent);
+            product.Version = resolvedEvent.Event.EventNumber.ToInt64();
         }
+
+        var eventsCount = await events.CountAsync();
+        if (eventsCount >= SNAPSHOT_INTERVAL)
+        {
+            await SaveSnapshotToCache(productId, product, cache);
+        }
+
         return product;
     }
 
+    private static async Task SaveSnapshotToCache(Guid productId, ProductSnapshot product, IDistributedCache cache)
+    {
+        var snapshotData = new ProductSnapshot(
+            product.Id,
+            product.QuantityInStock,
+            product.Version,
+            DateTime.UtcNow
+        );
+
+        var serializedSnapshot = JsonSerializer.Serialize(snapshotData);
+
+        await cache.SetStringAsync(
+            $"product-snapshot-{productId}",
+            serializedSnapshot,
+            new DistributedCacheEntryOptions { AbsoluteExpirationRelativeToNow = SNAPSHOT_TTL }
+        );
+    }
+
+    private static void ApplyEvent(Product product, ResolvedEvent resolvedEvent)
+    {
+        var eventData = resolvedEvent.Event.Data.ToArray();
+
+        switch (resolvedEvent.Event.EventType)
+        {
+            case nameof(OrderPlacedEvent):
+                var orderPlacedEvent = JsonSerializer.Deserialize<OrderPlacedEvent>(eventData);
+                if (orderPlacedEvent != null)
+                    product.Apply(orderPlacedEvent);
+                break;
+
+            case nameof(OrderCancelledEvent):
+                var orderCancelledEvent = JsonSerializer.Deserialize<OrderCancelledEvent>(eventData);
+                if (orderCancelledEvent != null) product.Apply(orderCancelledEvent);
+                break;
+
+            case nameof(ProductRestockedEvent):
+                var productRestockedEvent = JsonSerializer.Deserialize<ProductRestockedEvent>(eventData);
+                if (productRestockedEvent != null) product.Apply(productRestockedEvent);
+                break;
+
+            default:
+                Console.WriteLine($"Unknown event type: {resolvedEvent.Event.EventType}");
+                break;
+        }
+    }
 }
 
