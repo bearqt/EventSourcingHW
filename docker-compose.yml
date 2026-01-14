@@ -6,9 +6,16 @@ services:
       POSTGRES_PASSWORD: postgres 
       POSTGRES_DB: warehouse 
     ports: 
-      - "5432:5432" 
+      - "5432:5432"
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
 
-  eventstore: 
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
+
+  eventstore:
     image: eventstore/eventstore:latest 
     environment:
       - EVENTSTORE_CLUSTER_SIZE=1

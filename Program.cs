@@ -19,10 +19,10 @@ builder.Services.AddDbContext<WarehouseDbContext>(options =>
 });
 
 // Redis для хранения снапшотов
-//builder.Services.AddStackExchangeRedisCache(options =>
-//{
-//    options.Configuration = "localhost:12345";
-//});
+builder.Services.AddStackExchangeRedisCache(options =>
+{
+    options.Configuration = "localhost:6379";
+});
 
 var app = builder.Build();
 
@@ -206,7 +206,7 @@ public class WarehouseDbContext : DbContext
 public class Projections
 {
     private const int SNAPSHOT_INTERVAL = 50;
-    private static readonly TimeSpan SNAPSHOT_TTL = TimeSpan.FromHours(24);
+    private static readonly TimeSpan SNAPSHOT_TTL = TimeSpan.FromMinutes(5);
 
     public static async Task<Product?> GetProductProjection(
         Guid productId,
@@ -240,12 +240,19 @@ public class Projections
         long eventsCount = 0;
 
         var events = client.ReadStreamAsync(Direction.Forwards, $"product-{productId}", StreamPosition.Start);
-
-        await foreach (var resolvedEvent in events)
+        try
         {
-            eventsCount++;
-            ApplyEvent(product, resolvedEvent);
+            await foreach (var resolvedEvent in events)
+            {
+                eventsCount++;
+                ApplyEvent(product, resolvedEvent);
+            }
         }
+        catch (StreamNotFoundException)
+        {
+            // Stream does not exist yet, just ignore
+        }
+        
 
         var productSnapshot = new ProductSnapshot(product.Id, product.QuantityInStock, 1, DateTime.Now);
 
@@ -264,18 +271,25 @@ public class Projections
             StreamPosition.FromInt64(product.Version + 1)
         );
 
-        await foreach (var resolvedEvent in events)
+        try
         {
-            ApplyEvent(product, resolvedEvent);
-            product.Version = resolvedEvent.Event.EventNumber.ToInt64();
+            var eventsCount = 0;
+            await foreach (var resolvedEvent in events)
+            {
+                ApplyEvent(product, resolvedEvent);
+                product.Version = resolvedEvent.Event.EventNumber.ToInt64();
+                eventsCount++;
+            }
+            
+            if (eventsCount >= SNAPSHOT_INTERVAL)
+            {
+                await SaveSnapshotToCache(productId, product, cache);
+            }
         }
-
-        var eventsCount = await events.CountAsync();
-        if (eventsCount >= SNAPSHOT_INTERVAL)
+        catch (StreamNotFoundException)
         {
-            await SaveSnapshotToCache(productId, product, cache);
+            
         }
-
         return product;
     }
 
