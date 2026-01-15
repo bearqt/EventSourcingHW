@@ -1,6 +1,7 @@
 CREATE TABLE "Products" (
 "Id" UUID NOT NULL,
 "QuantityInStock" INTEGER NOT NULL,
+"Version" BIGINT NOT NULL DEFAULT -1,
 CONSTRAINT "PK_Products" PRIMARY KEY ("Id")
 );
 
