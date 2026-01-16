@@ -1,0 +1,220 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "Delivery Service API",
+    "version": "1.0"
+  },
+  "tags": [
+    {
+      "name": "DeliveryService"
+    }
+  ],
+  "schemes": [
+    "http"
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/v1/deliveries": {
+      "get": {
+        "operationId": "DeliveryService_ListDeliveries",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ListDeliveriesResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "DeliveryService"
+        ]
+      },
+      "post": {
+        "operationId": "DeliveryService_CreateDelivery",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1CreateDeliveryResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1CreateDeliveryRequest"
+            }
+          }
+        ],
+        "tags": [
+          "DeliveryService"
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {}
+    },
+    "rpcStatus": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/protobufAny"
+          }
+        }
+      }
+    },
+    "v1CreateDeliveryRequest": {
+      "type": "object",
+      "properties": {
+        "orderId": {
+          "type": "string"
+        },
+        "address": {
+          "$ref": "#/definitions/v1DeliveryAddress"
+        },
+        "window": {
+          "$ref": "#/definitions/v1DeliveryWindow"
+        },
+        "instructions": {
+          "type": "string"
+        }
+      }
+    },
+    "v1CreateDeliveryResponse": {
+      "type": "object",
+      "properties": {
+        "delivery": {
+          "$ref": "#/definitions/v1Delivery"
+        }
+      }
+    },
+    "v1Delivery": {
+      "type": "object",
+      "properties": {
+        "deliveryId": {
+          "type": "string"
+        },
+        "orderId": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/v1DeliveryStatus"
+        },
+        "address": {
+          "$ref": "#/definitions/v1DeliveryAddress"
+        },
+        "window": {
+          "$ref": "#/definitions/v1DeliveryWindow"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "v1DeliveryAddress": {
+      "type": "object",
+      "properties": {
+        "recipientName": {
+          "type": "string"
+        },
+        "phone": {
+          "type": "string"
+        },
+        "line1": {
+          "type": "string"
+        },
+        "line2": {
+          "type": "string"
+        },
+        "city": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "postalCode": {
+          "type": "string"
+        },
+        "countryCode": {
+          "type": "string"
+        }
+      }
+    },
+    "v1DeliveryStatus": {
+      "type": "string",
+      "enum": [
+        "DELIVERY_STATUS_UNSPECIFIED",
+        "DELIVERY_STATUS_PENDING",
+        "DELIVERY_STATUS_SCHEDULED",
+        "DELIVERY_STATUS_DISPATCHED",
+        "DELIVERY_STATUS_DELIVERED",
+        "DELIVERY_STATUS_CANCELED"
+      ],
+      "default": "DELIVERY_STATUS_UNSPECIFIED"
+    },
+    "v1DeliveryWindow": {
+      "type": "object",
+      "properties": {
+        "startAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "endAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "v1ListDeliveriesResponse": {
+      "type": "object",
+      "properties": {
+        "deliveries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Delivery"
+          }
+        }
+      }
+    }
+  }
+}

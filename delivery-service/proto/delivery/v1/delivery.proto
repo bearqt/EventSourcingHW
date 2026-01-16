@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+package delivery.v1;
+
+option go_package = "warehouse/delivery/gen/go/delivery/v1;deliveryv1";
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+import "validate/validate.proto";
+
+option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_swagger) = {
+  info: {
+    title: "Delivery Service API";
+    version: "1.0";
+  };
+  schemes: HTTP;
+  consumes: "application/json";
+  produces: "application/json";
+};
+
+service DeliveryService {
+  rpc CreateDelivery(CreateDeliveryRequest) returns (CreateDeliveryResponse) {
+    option (google.api.http) = {
+      post: "/v1/deliveries"
+      body: "*"
+    };
+  }
+
+  rpc ListDeliveries(ListDeliveriesRequest) returns (ListDeliveriesResponse) {
+    option (google.api.http) = {
+      get: "/v1/deliveries"
+    };
+  }
+}
+
+message CreateDeliveryRequest {
+  string order_id = 1 [(validate.rules).string = {min_len: 1, max_len: 64}];
+  DeliveryAddress address = 2 [(validate.rules).message.required = true];
+  DeliveryWindow window = 3;
+  string instructions = 4 [(validate.rules).string = {max_len: 500}];
+}
+
+message CreateDeliveryResponse {
+  Delivery delivery = 1 [(validate.rules).message.required = true];
+}
+
+message ListDeliveriesRequest {}
+
+message ListDeliveriesResponse {
+  repeated Delivery deliveries = 1;
+}
+
+message Delivery {
+  string delivery_id = 1 [(validate.rules).string = {min_len: 1, max_len: 64}];
+  string order_id = 2 [(validate.rules).string = {min_len: 1, max_len: 64}];
+  DeliveryStatus status = 3 [(validate.rules).enum = {defined_only: true}];
+  DeliveryAddress address = 4 [(validate.rules).message.required = true];
+  DeliveryWindow window = 5;
+  google.protobuf.Timestamp created_at = 6;
+}
+
+message DeliveryAddress {
+  string recipient_name = 1 [(validate.rules).string = {min_len: 1, max_len: 120}];
+  string phone = 2 [(validate.rules).string = {min_len: 7, max_len: 20}];
+  string line1 = 3 [(validate.rules).string = {min_len: 1, max_len: 120}];
+  string line2 = 4 [(validate.rules).string = {max_len: 120}];
+  string city = 5 [(validate.rules).string = {min_len: 1, max_len: 80}];
+  string region = 6 [(validate.rules).string = {max_len: 80}];
+  string postal_code = 7 [(validate.rules).string = {min_len: 1, max_len: 20}];
+  string country_code = 8 [(validate.rules).string = {min_len: 2, max_len: 2}];
+}
+
+message DeliveryWindow {
+  google.protobuf.Timestamp start_at = 1;
+  google.protobuf.Timestamp end_at = 2;
+}
+
+enum DeliveryStatus {
+  DELIVERY_STATUS_UNSPECIFIED = 0;
+  DELIVERY_STATUS_PENDING = 1;
+  DELIVERY_STATUS_SCHEDULED = 2;
+  DELIVERY_STATUS_DISPATCHED = 3;
+  DELIVERY_STATUS_DELIVERED = 4;
+  DELIVERY_STATUS_CANCELED = 5;
+}

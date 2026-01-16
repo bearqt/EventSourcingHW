@@ -1,4 +1,26 @@
 services: 
+  delivery-postgres:
+    image: postgres:latest
+    environment:
+      POSTGRES_USER: delivery
+      POSTGRES_PASSWORD: delivery
+      POSTGRES_DB: delivery
+    ports:
+      - "5433:5432"
+    volumes:
+      - delivery-postgres-data:/var/lib/postgresql/data
+
+  delivery-service:
+    build:
+      context: ./delivery-service
+    environment:
+      DELIVERY_DB_DSN: "host=delivery-postgres port=5432 user=delivery password=delivery dbname=delivery sslmode=disable"
+    ports:
+      - "8081:8080"
+      - "9091:9090"
+    depends_on:
+      - delivery-postgres
+
   postgres: 
     image: postgres:latest 
     environment: 
@@ -38,5 +60,6 @@ services:
         target: /var/log/eventstore 
 
 volumes: 
+  delivery-postgres-data:
   eventstore-data: 
   eventstore-logs: 
