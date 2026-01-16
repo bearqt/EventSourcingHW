@@ -1,4 +1,4 @@
-@base_address = http://localhost:5131
+@base_address = http://localhost:8080
 GET {{base_address}}/products
 ###
 POST {{base_address}}/orders
@@ -6,13 +6,30 @@ Content-Type: application/json
 
 {
   "productId": "f1122ce7-4f70-46ad-8345-01bfb60beb21",
-  "quantity": 50
+  "quantity": 10
+}
+###
+POST {{base_address}}/orders
+Content-Type: application/json
+
+{
+  "productId": "f1122ce7-4f70-46ad-8345-01bfb60beb21",
+  "quantity": 10,
+  "recipientName": "molodoy chelovek",
+  "phone": "79308533270",
+  "addressLine1": "ylica pushkina",
+  "addressLine2": "dom kolotyshkina",
+  "city": "Moskva Gorod123",
+  "region": "md",
+  "postalCode": "123",
+  "countryCode": "zz"
 }
 ###
 GET {{base_address}}/products/f1122ce7-4f70-46ad-8345-01bfb60beb21/events
 ###
 POST {{base_address}}/orders/cancel
 Content-Type: application/json
+
 {
   "productId": "f1122ce7-4f70-46ad-8345-01bfb60beb21",
   "quantity": 50
@@ -21,7 +38,8 @@ Content-Type: application/json
 ###
 POST {{base_address}}/products/restock
 Content-Type: application/json
+
 {
   "productId": "f1122ce7-4f70-46ad-8345-01bfb60beb21",
-  "quantity": 30
+  "quantity": 10
 }

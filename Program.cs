@@ -1,6 +1,7 @@
 using EventStore.Client;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
+using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using Warehouse;
@@ -10,19 +11,29 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 // Регистрация клиента для EventStoreDB
-builder.Services.AddEventStoreClient("esdb://localhost:2113?tls=false");
+var eventStoreConnection = builder.Configuration["EventStore:ConnectionString"] ?? "esdb://localhost:2113?tls=false";
+builder.Services.AddEventStoreClient(eventStoreConnection);
 
 // Регистрация DbContext для PostgreSQL
 builder.Services.AddDbContext<WarehouseDbContext>(options =>
 {
-    options.UseNpgsql("Host=localhost;Port=5432;Database=warehouse;Username=postgres;Password=postgres",
+    var postgresConnection = builder.Configuration["Postgres:ConnectionString"] ??
+        "Host=localhost;Port=5432;Database=warehouse;Username=postgres;Password=postgres";
+    options.UseNpgsql(postgresConnection,
         b => b.MigrationsAssembly("Warehouse"));
 });
 
 // Redis для хранения снапшотов
 builder.Services.AddStackExchangeRedisCache(options =>
 {
-    options.Configuration = "localhost:6379";
+    options.Configuration = builder.Configuration["Redis:Configuration"] ?? "localhost:6379";
+});
+
+builder.Services.AddHttpClient("delivery", client =>
+{
+    var baseUrl = builder.Configuration["Delivery:BaseUrl"] ?? "http://localhost:8081";
+    client.BaseAddress = new Uri(baseUrl);
+    client.Timeout = TimeSpan.FromSeconds(5);
 });
 
 // Register Background Service
@@ -30,7 +41,7 @@ builder.Services.AddHostedService<EventStoreSubscriptionService>();
 
 var app = builder.Build();
 
-app.MapPost("/orders", async (PlaceOrderCommand command, EventStoreClient client, WarehouseDbContext db, IDistributedCache cache) =>
+app.MapPost("/orders", async (PlaceOrderCommand command, EventStoreClient client, WarehouseDbContext db, IDistributedCache cache, IHttpClientFactory httpClientFactory, CancellationToken ct) =>
 {
     // Получаем текущее состояние товара через проекцию
     
@@ -42,6 +53,7 @@ app.MapPost("/orders", async (PlaceOrderCommand command, EventStoreClient client
     // Проверяем бизнес-логику (достаточно ли товара)
     if (product != null && product.QuantityInStock >= command.Quantity)
     {
+        var orderId = Guid.NewGuid();
         // Создаем экземпляр события, используя конструктор record'а
         var orderPlacedEvent = new OrderPlacedEvent(command.ProductId, command.Quantity);
 
@@ -59,6 +71,59 @@ app.MapPost("/orders", async (PlaceOrderCommand command, EventStoreClient client
             new[] { eventData }
         );
 
+        var deliveryRequest = new CreateDeliveryRequestDto
+        {
+            OrderId = orderId.ToString("N"),
+            Address = new DeliveryAddressDto
+            {
+                RecipientName = command.RecipientName,
+                Phone = command.Phone,
+                Line1 = command.AddressLine1,
+                Line2 = command.AddressLine2,
+                City = command.City,
+                Region = command.Region,
+                PostalCode = command.PostalCode,
+                CountryCode = command.CountryCode,
+            }
+        };
+
+        async Task<IResult> CompensateAsync()
+        {
+            Console.WriteLine("ERROR sending request to delivery service. Rolling back with compensation...");
+
+            var cancelEvent = new OrderCancelledEvent(command.ProductId, command.Quantity);
+            var cancelEventData = new EventData(
+                Uuid.NewUuid(),
+                nameof(OrderCancelledEvent),
+                JsonSerializer.SerializeToUtf8Bytes((object)cancelEvent)
+            );
+
+            await client.AppendToStreamAsync(
+                $"product-{command.ProductId}",
+                StreamState.Any,
+                new[] { cancelEventData },
+                cancellationToken: ct
+            );
+            Console.WriteLine("OrderCancelledEvent was published to EventStore. Compensation successfull");
+
+            return Results.Problem("Delivery creation failed. Order has been compensated.", statusCode: 502);
+        }
+
+        var deliveryClient = httpClientFactory.CreateClient("delivery");
+        try
+        {
+            Console.WriteLine("Sending request to delivery-service...");
+            using var response = await deliveryClient.PostAsJsonAsync("/v1/deliveries", deliveryRequest, ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                return await CompensateAsync();
+            }
+        }
+        catch (Exception)
+        {
+            return await CompensateAsync();
+        }
+        Console.WriteLine("Success creating order");
         return Results.Ok("Order placed successfully.");
     }
     else
@@ -141,9 +206,38 @@ public record OrderPlacedEvent(Guid ProductId, int Quantity) : IDomainEvent;
 public record OrderCancelledEvent(Guid ProductId, int Quantity) : IDomainEvent;
 public record ProductRestockedEvent(Guid ProductId, int Quantity) : IDomainEvent;
 
-public record PlaceOrderCommand(Guid ProductId, int Quantity);
+public record PlaceOrderCommand(
+    Guid ProductId,
+    int Quantity,
+    string RecipientName,
+    string Phone,
+    string AddressLine1,
+    string? AddressLine2,
+    string City,
+    string? Region,
+    string PostalCode,
+    string CountryCode
+);
 public record CancelOrderCommand(Guid ProductId, int Quantity);
 public record RestockProductCommand(Guid ProductId, int Quantity);
+
+public sealed class CreateDeliveryRequestDto
+{
+    public string OrderId { get; set; } = "";
+    public DeliveryAddressDto Address { get; set; } = new();
+}
+
+public sealed class DeliveryAddressDto
+{
+    public string RecipientName { get; set; } = "";
+    public string Phone { get; set; } = "";
+    public string Line1 { get; set; } = "";
+    public string? Line2 { get; set; }
+    public string City { get; set; } = "";
+    public string? Region { get; set; }
+    public string PostalCode { get; set; } = "";
+    public string CountryCode { get; set; } = "";
+}
 
 public class Product
 {

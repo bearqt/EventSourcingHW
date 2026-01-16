@@ -21,19 +21,47 @@ public class EventStoreSubscriptionService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var checkpoint = await GetCheckpointAsync(stoppingToken);
-        var position = checkpoint.HasValue
-            ? FromAll.After(new Position((ulong)checkpoint.Value, (ulong)checkpoint.Value))
-            : FromAll.Start;
+        var retryDelay = TimeSpan.FromSeconds(2);
 
-        _logger.LogInformation($"Starting subscription from position: {checkpoint}");
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                var checkpoint = await GetCheckpointAsync(stoppingToken);
+                var position = checkpoint.HasValue
+                    ? FromAll.After(new Position((ulong)checkpoint.Value, (ulong)checkpoint.Value))
+                    : FromAll.Start;
 
-        await _client.SubscribeToAllAsync(
-            position,
-            EventAppeared,
-            filterOptions: new SubscriptionFilterOptions(EventTypeFilter.ExcludeSystemEvents()),
-            cancellationToken: stoppingToken
-        );
+                _logger.LogInformation("Starting subscription from position: {Checkpoint}", checkpoint);
+
+                var droppedTcs = new TaskCompletionSource<Exception?>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+
+                await _client.SubscribeToAllAsync(
+                    position,
+                    EventAppeared,
+                    filterOptions: new SubscriptionFilterOptions(EventTypeFilter.ExcludeSystemEvents()),
+                    subscriptionDropped: (_, reason, ex) =>
+                    {
+                        _logger.LogWarning(ex, "Subscription dropped: {Reason}", reason);
+                        droppedTcs.TrySetResult(ex);
+                    },
+                    cancellationToken: stoppingToken
+                );
+
+                await Task.WhenAny(droppedTcs.Task, Task.Delay(System.Threading.Timeout.Infinite, stoppingToken));
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Subscription failed. Retrying in {DelaySeconds}s", retryDelay.TotalSeconds);
+            }
+
+            await Task.Delay(retryDelay, stoppingToken);
+        }
     }
 
     private async Task EventAppeared(StreamSubscription subscription, ResolvedEvent resolvedEvent, CancellationToken cancellationToken)
